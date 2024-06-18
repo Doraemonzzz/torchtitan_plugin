@@ -24,7 +24,7 @@ from torch.distributed.tensor.parallel import loss_parallel
 from torchtitan.checkpoint import CheckpointManager
 from torchtitan.datasets import create_tokenizer
 from torchtitan.float8_linear import build_fp8_linear
-from torchtitan.logging_utils import init_logger, logger
+from torchtitan.logging_utils import init_logger
 from torchtitan.lr_scheduling import get_lr_scheduler
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
 
@@ -52,7 +52,7 @@ from torchtitan.utils import (
 from torchtitan_plugin.data import build_data_loader
 from torchtitan_plugin.models import model_name_to_cls, models_config
 from torchtitan_plugin.parallelisms import models_parallelize_fns, models_pipelining_fns
-from torchtitan_plugin.utils import JobConfig
+from torchtitan_plugin.utils import JobConfig, logging_info
 
 
 @dataclass
@@ -121,7 +121,7 @@ def build_optimizer(model, job_config: JobConfig):
 @record
 def main(job_config: JobConfig):
     init_logger()
-    logger.info(f"Starting job: {job_config.job.description}")
+    logging_info(f"Starting job: {job_config.job.description}")
 
     # used for colorful printing
     color = Color if job_config.metrics.enable_color_printing else NoColor
@@ -193,11 +193,11 @@ def main(job_config: JobConfig):
     model_config.vocab_size = tokenizer.n_words
     model_config.max_seq_len = job_config.training.seq_len
 
-    logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
+    logging_info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
 
-    logger.info(model)
+    logging_info(model)
 
     # apply fp8 linear module swap
     if job_config.training.fp8_linear:
@@ -210,7 +210,7 @@ def main(job_config: JobConfig):
         model_config,
         job_config.training.seq_len,
     )
-    logger.info(
+    logging_info(
         f"{color.blue}Model {model_name} {job_config.model.flavor} "
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
@@ -242,7 +242,7 @@ def main(job_config: JobConfig):
         model.init_weights()
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
-    logger.info(
+    logging_info(
         f"GPU memory usage for model: "
         f"{gpu_mem_stats.max_reserved_gib:.2f}GiB"
         f"({gpu_mem_stats.max_reserved_pct:.2f}%)"
@@ -275,7 +275,7 @@ def main(job_config: JobConfig):
             world_size == 1
         ), "Must create seed-checkpoint using one gpu, to disable sharding"
         checkpoint.save(curr_step=0, force=True)
-        logger.info("Created seed checkpoint")
+        logging_info("Created seed checkpoint")
         return
 
     checkpoint_loaded = checkpoint.load()
@@ -309,7 +309,7 @@ def main(job_config: JobConfig):
     gpu_memory_monitor.reset_peak_stats()
 
     # train loop
-    logger.info(f"Training starts at step {train_state.step + 1}")
+    logging_info(f"Training starts at step {train_state.step + 1}")
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
     ) as torch_profiler:
@@ -426,7 +426,7 @@ def main(job_config: JobConfig):
                 }
                 metric_logger.log(metrics, step=train_state.step)
 
-                logger.info(
+                logging_info(
                     f"{color.cyan}step: {train_state.step:2}  "
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
                     f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
@@ -457,11 +457,11 @@ def main(job_config: JobConfig):
                 )
 
     if torch.distributed.get_rank() == 0:
-        logger.info("Sleeping 2 seconds for other ranks to complete")
+        logging_info("Sleeping 2 seconds for other ranks to complete")
         time.sleep(2)
 
     metric_logger.close()
-    logger.info("Training completed")
+    logging_info("Training completed")
 
 
 if __name__ == "__main__":
