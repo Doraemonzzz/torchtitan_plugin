@@ -26,7 +26,8 @@ from torch.distributed.tensor.parallel import (
 )
 from torch.utils.checkpoint import checkpoint
 from torchtitan.config_manager import TORCH_DTYPE_MAP, JobConfig
-from torchtitan.logging_utils import logger
+
+from torchtitan_plugin.utils import logging_info
 
 # for selective AC
 no_recompute_list = {
@@ -210,7 +211,7 @@ def apply_tp(model, world_mesh, parallel_dims, job_config: JobConfig):
             parallelize_plan=layer_plan,
         )
 
-    logger.info("Applied Tensor Parallelism to the model")
+    logging_info("Applied Tensor Parallelism to the model")
     return model
 
 
@@ -225,7 +226,7 @@ def apply_ac(model, job_config: JobConfig):
         transformer_block = checkpoint_wrapper(transformer_block, ac_config)
         model.layers.register_module(layer_id, transformer_block)
 
-    logger.info(f"Applied {ac_config.mode} activation checkpointing to the model")
+    logging_info(f"Applied {ac_config.mode} activation checkpointing to the model")
     return model
 
 
@@ -255,7 +256,7 @@ def apply_compile(model, job_config: JobConfig):
             True
         )
 
-    logger.info("Compiled each TransformerBlock with torch.compile")
+    logging_info("Compiled each TransformerBlock with torch.compile")
     return model
 
 
@@ -292,7 +293,7 @@ def apply_dp(model, world_mesh, parallel_dims, job_config: JobConfig):
         model, **fsdp_config, reshard_after_forward=not parallel_dims.pp_enabled
     )
 
-    logger.info("Applied FSDP to the model")
+    logging_info("Applied FSDP to the model")
     return model
 
 

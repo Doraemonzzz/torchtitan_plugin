@@ -23,7 +23,8 @@ from datasets import load_dataset
 from datasets.distributed import split_dataset_by_node
 from torchtitan.datasets.hf_datasets import HuggingFaceDataset
 from torchtitan.datasets.tokenizer import Tokenizer
-from torchtitan.logging_utils import logger
+
+from torchtitan_plugin.utils import logging_info
 
 
 def extract_field(example):
@@ -77,7 +78,7 @@ class LocalDataset(IterableDataset, Stateful):
         rank: int = 0,
         infinite: bool = False,
     ) -> None:
-        logger.info(f"Preparing dataset from {dataset_path}")
+        logging_info(f"Preparing dataset from {dataset_path}")
 
         ds = load_dataset(dataset_path, split="train", streaming=True).map(
             extract_field
@@ -186,12 +187,12 @@ def build_data_loader(
     infinite: bool = True,
 ):
     if len(dataset_name) > 0:
-        logger.info(f"Using hf dataset")
+        logging_info(f"Using hf dataset")
         ds = HuggingFaceDataset(
             dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, infinite
         )
     else:
-        logger.info(f"Using local dataset")
+        logging_info(f"Using local dataset")
         ds = LocalDataset(dataset_path, tokenizer, seq_len, world_size, rank, infinite)
 
     return DPAwareDataLoader(rank, ds, batch_size=batch_size)

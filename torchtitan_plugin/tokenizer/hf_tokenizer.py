@@ -1,7 +1,8 @@
 from typing import List
 
-from torchtitan.logging_utils import logger
 from transformers import AutoTokenizer
+
+from torchtitan_plugin.utils import logging_info
 
 from .base_tokenizer import BaseTokenizer
 
@@ -27,9 +28,9 @@ class HFTokenizer(BaseTokenizer):
         self.eos_id: int = self.tokenizer.eos_token_id
         self.pad_id = self.tokenizer.pad_token_id
         if self.pad_id is None:
-            logger.info(f"Pad ID is not set, using the Eos ID instead.")
+            logging_info(f"Pad ID is not set, using the Eos ID instead.")
             self.pad_id = self.eos_id
-        logger.info(
+        logging_info(
             f"HF Tokenizer built: #words {self.n_words}, BOS ID {self.bos_id}, EOS ID {self.eos_id}"
         )
 

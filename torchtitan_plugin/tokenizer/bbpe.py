@@ -2,7 +2,8 @@ import os
 from typing import List
 
 from tokenizers import ByteLevelBPETokenizer as ByteLevelBPETokenizer_
-from torchtitan.logging_utils import logger
+
+from torchtitan_plugin.utils import logging_info
 
 from .base_tokenizer import BaseTokenizer
 
@@ -28,7 +29,7 @@ class ByteLevelBPETokenizer(BaseTokenizer):
         self.bos_id: int = self.tokenizer.token_to_id("<s>")
         self.eos_id: int = self.tokenizer.token_to_id("</s>")
         self.pad_id: int = self.tokenizer.token_to_id("<pad>")
-        logger.info(
+        logging_info(
             f"ByteLevelBPETokenizer built: #words {self.n_words}, BOS ID {self.bos_id}, EOS ID {self.eos_id}"
         )
 
