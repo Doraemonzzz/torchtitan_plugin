@@ -27,7 +27,7 @@ from torchtitan.float8_linear import build_fp8_linear
 from torchtitan.logging_utils import init_logger, logger
 from torchtitan.lr_scheduling import get_lr_scheduler
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
-from torchtitan.models import model_name_to_cls, models_config
+# from torchtitan.models import model_name_to_cls, models_config
 from torchtitan.parallelisms import ParallelDims
 
 try:
@@ -51,7 +51,7 @@ from torchtitan.utils import (
 from torchtitan_plugin.data import build_data_loader
 from torchtitan_plugin.parallelisms import models_parallelize_fns, models_pipelining_fns
 from torchtitan_plugin.utils import JobConfig
-
+from torchtitan_plugin.models import model_name_to_cls, models_config
 
 @dataclass
 class TrainState(Stateful):
