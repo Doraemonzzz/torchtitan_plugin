@@ -1,4 +1,5 @@
 from torchtitan.models.llama import Transformer
+
 from .model_llama import llama2_configs, llama3_configs
 
 models_config = {
