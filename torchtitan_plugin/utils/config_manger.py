@@ -22,6 +22,6 @@ class JobConfig(BaseJobConfig):
             "--model.tokenizer_type",
             type=str,
             default="sentencepiece",
-            choices=["sentencepiece", "tiktoken"],
+            choices=["sentencepiece", "tiktoken", "bbpe", "hf"],
             help="Tokenizer type",
         )

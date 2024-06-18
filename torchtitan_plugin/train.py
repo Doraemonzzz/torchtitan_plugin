@@ -22,7 +22,8 @@ from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.tensor.parallel import loss_parallel
 from torchtitan.checkpoint import CheckpointManager
-from torchtitan.datasets import create_tokenizer
+
+# from torchtitan.datasets import create_tokenizer
 from torchtitan.float8_linear import build_fp8_linear
 from torchtitan.logging_utils import init_logger
 from torchtitan.lr_scheduling import get_lr_scheduler
@@ -52,6 +53,7 @@ from torchtitan.utils import (
 from torchtitan_plugin.data import build_data_loader
 from torchtitan_plugin.models import model_name_to_cls, models_config
 from torchtitan_plugin.parallelisms import models_parallelize_fns, models_pipelining_fns
+from torchtitan_plugin.tokenizer import create_tokenizer
 from torchtitan_plugin.utils import JobConfig, logging_info
 
 
