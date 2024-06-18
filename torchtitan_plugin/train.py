@@ -22,19 +22,22 @@ from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.tensor.parallel import loss_parallel
 from torchtitan.checkpoint import CheckpointManager
-from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import create_tokenizer
 from torchtitan.float8_linear import build_fp8_linear
 from torchtitan.logging_utils import init_logger, logger
 from torchtitan.lr_scheduling import get_lr_scheduler
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
-from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
+from torchtitan.models import model_name_to_cls, models_config
 from torchtitan.parallelisms import (
     ParallelDims,
     models_parallelize_fns,
     models_pipelining_fns,
 )
-from torchtitan.parallelisms.pipelining_utils import build_pipeline_schedule
+
+try:
+    from torchtitan.parallelisms.pipelining_utils import build_pipeline_schedule
+except:
+    build_pipeline_schedule = None
 from torchtitan.profiling import maybe_enable_profiling
 from torchtitan.utils import (
     Color,
@@ -50,6 +53,7 @@ from torchtitan.utils import (
 )
 
 from torchtitan_plugin.data import build_data_loader
+from torchtitan_plugin.utils import JobConfig
 
 
 @dataclass
@@ -156,7 +160,7 @@ def main(job_config: JobConfig):
     model_name = job_config.model.name
 
     # build tokenizer
-    tokenizer_type = model_name_to_tokenizer[model_name]
+    tokenizer_type = job_config.model.tokenizer_type
     tokenizer = create_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
 
     # build dataloader
@@ -193,6 +197,8 @@ def main(job_config: JobConfig):
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
+
+    logger.info(model)
 
     # apply fp8 linear module swap
     if job_config.training.fp8_linear:
