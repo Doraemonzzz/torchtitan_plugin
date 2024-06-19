@@ -312,6 +312,7 @@ def main(job_config: JobConfig):
 
     # train loop
     logging_info(f"Training starts at step {train_state.step + 1}")
+    batch = next(data_iterator)
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
     ) as torch_profiler:
@@ -322,7 +323,7 @@ def main(job_config: JobConfig):
 
             # get batch
             data_load_start = timer()
-            batch = next(data_iterator)
+
             input_ids, labels = batch
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(timer() - data_load_start)
@@ -350,6 +351,7 @@ def main(job_config: JobConfig):
                     if is_last_stage
                     else torch.Tensor([-1.0])
                 )
+                batch = next(data_iterator)
             else:
                 # Non-PP forward / backward
                 with loss_parallel_ctx():
@@ -358,6 +360,7 @@ def main(job_config: JobConfig):
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
+                    batch = next(data_iterator)
                     loss.backward()
 
             # clip gradients

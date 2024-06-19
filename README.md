@@ -11,3 +11,5 @@ Some plugins for using [torchtitan](https://github.com/pytorch/torchtitan).
 - [ ] Test fsdp.
 - [ ] Test tp.
 - [x] Support gpt2 tokenzer, hf tokenzer.
+
+## benchmark
