@@ -28,8 +28,6 @@ from torchtitan.float8_linear import build_fp8_linear
 from torchtitan.logging_utils import init_logger
 from torchtitan.lr_scheduling import get_lr_scheduler
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
-
-# from torchtitan.models import model_name_to_cls, models_config
 from torchtitan.parallelisms import ParallelDims
 
 try:
@@ -43,18 +41,22 @@ from torchtitan.utils import (
     dist_max,
     dist_mean,
     get_metrics_rank,
-    get_num_flop_per_token,
-    get_num_params,
     get_peak_flops,
     init_distributed,
     set_pg_timeouts,
 )
+from transformers import AutoModelForCausalLM
 
 from torchtitan_plugin.data import build_data_loader
 from torchtitan_plugin.models import model_name_to_cls, models_config
 from torchtitan_plugin.parallelisms import models_parallelize_fns, models_pipelining_fns
 from torchtitan_plugin.tokenizer import create_tokenizer
-from torchtitan_plugin.utils import JobConfig, logging_info
+from torchtitan_plugin.utils import (
+    JobConfig,
+    get_num_flop_per_token,
+    get_num_params,
+    logging_info,
+)
 
 
 @dataclass
@@ -185,7 +187,7 @@ def main(job_config: JobConfig):
         return F.cross_entropy(pred.flatten(0, 1), labels.flatten(0, 1))
 
     # build model (using meta init)
-    model_cls = model_name_to_cls[model_name]
+    model_cls = model_name_to_cls.get(model_name, AutoModelForCausalLM)
     model_config = models_config[model_name][job_config.model.flavor]
     # set the model configs from training inputs:
     # 1. norm type to decide which norm layer to use
@@ -197,7 +199,12 @@ def main(job_config: JobConfig):
 
     logging_info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
-        model = model_cls.from_model_args(model_config)
+        try:
+            logging_info(f"Using torchtitan model")
+            model = model_cls.from_model_args(model_config)
+        except:
+            logging_info(f"Using xmixers model")
+            model = model_cls.from_config(model_config)
 
     logging_info(model)
 
@@ -356,6 +363,8 @@ def main(job_config: JobConfig):
                 # Non-PP forward / backward
                 with loss_parallel_ctx():
                     pred = model(input_ids)
+                    if hasattr(pred, "logits"):
+                        pred = pred.logits
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
