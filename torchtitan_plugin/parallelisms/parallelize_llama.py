@@ -120,8 +120,7 @@ def apply_compile(model, job_config: JobConfig):
         # compile time.
         # torch._dynamo.config.inline_inbuilt_nn_modules = True
         block = torch.compile(block, dynamic=False)
-        # model.model.layers[layer_id] = block
-        model.model.layers.register_module(layer_id, block)
+        model.model.layers[layer_id] = block
 
     ac_config = job_config.activation_checkpoint
     if ac_config.mode == "selective" and ac_config.selective_ac_option == "op":
@@ -149,6 +148,7 @@ def apply_dp(model, world_mesh, parallel_dims, job_config: JobConfig):
     fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
 
     for layer_id, block in enumerate(model.model.layers):
+        # for layer_id, block in model.model.layers.items():
         # As an optimization, do not reshard after forward for the last
         # transformer block since FSDP would prefetch it immediately.
         # When using Pipeline Parallelism, generally zero-2 is best so as to avoid repeated reshardings

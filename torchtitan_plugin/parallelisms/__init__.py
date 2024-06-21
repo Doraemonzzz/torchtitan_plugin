@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from functools import cached_property
 
+from torch.distributed.device_mesh import init_device_mesh
+
 from ..utils import logging_info
 from .parallelize_llama import parallelize_llama, pipeline_llama
 from .parallelize_llama_torchtitan import (
