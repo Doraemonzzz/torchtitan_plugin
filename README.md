@@ -26,7 +26,7 @@ small (465m, 36, 2k, fsdp+act):
 | desc       | tgs | memory |
 |------------|-----|--------|
 | metaseq    | 30k | 62.9   |
-| torchtitan | 40k | 79     |
+| torchtitan | 40k | 70     |
 | xmixers    | 43k | 44.64  |
 
 
