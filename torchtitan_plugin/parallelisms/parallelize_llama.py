@@ -57,7 +57,6 @@ def apply_tp(model, world_mesh, parallel_dims, job_config: JobConfig):
     )
 
     # Apply tensor + sequence parallelism to every transformer block
-    # for layer_id, block in model.model.layers.items():
     for layer_id, block in enumerate(model.model.layers):
         layer_plan = {
             "token_mixer": prepare_module_input(
@@ -96,7 +95,6 @@ def apply_ac(model, job_config: JobConfig):
 
     ac_config = job_config.activation_checkpoint
 
-    # for layer_id, block in model.model.layers.items():
     for layer_id, block in enumerate(model.model.layers):
         block = checkpoint_wrapper(block, ac_config)
         model.model.layers[layer_id] = block
@@ -150,7 +148,6 @@ def apply_dp(model, world_mesh, parallel_dims, job_config: JobConfig):
     )
     fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
 
-    # for layer_id, block in model.model.layers.items():
     for layer_id, block in enumerate(model.model.layers):
         # As an optimization, do not reshard after forward for the last
         # transformer block since FSDP would prefetch it immediately.
