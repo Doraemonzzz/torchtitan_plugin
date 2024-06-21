@@ -25,16 +25,18 @@ from torchtitan.checkpoint import CheckpointManager
 
 # from torchtitan.datasets import create_tokenizer
 from torchtitan.float8_linear import build_fp8_linear
-from torchtitan.logging_utils import init_logger
+
+# from torchtitan.logging_utils import init_logger
 from torchtitan.lr_scheduling import get_lr_scheduler
-from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
+
+# from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
 from torchtitan.parallelisms import ParallelDims
 
 try:
     from torchtitan.parallelisms.pipelining_utils import build_pipeline_schedule
 except:
     build_pipeline_schedule = None
-from torchtitan.profiling import maybe_enable_profiling
+# from torchtitan.profiling import maybe_enable_profiling
 from torchtitan.utils import (
     Color,
     NoColor,
@@ -53,9 +55,13 @@ from torchtitan_plugin.parallelisms import models_parallelize_fns, models_pipeli
 from torchtitan_plugin.tokenizer import create_tokenizer
 from torchtitan_plugin.utils import (
     JobConfig,
+    build_gpu_memory_monitor,
+    build_metric_logger,
     get_num_flop_per_token,
     get_num_params,
+    init_logger,
     logging_info,
+    maybe_enable_profiling,
 )
 
 
@@ -125,7 +131,6 @@ def build_optimizer(model, job_config: JobConfig):
 @record
 def main(job_config: JobConfig):
     init_logger()
-    logging_info(f"Starting job: {job_config.job.description}")
 
     # used for colorful printing
     color = Color if job_config.metrics.enable_color_printing else NoColor
@@ -147,6 +152,8 @@ def main(job_config: JobConfig):
     device = torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
     torch.cuda.set_device(device)
     init_distributed(job_config)
+
+    logging_info(f"Starting job: {job_config.job.description}")
 
     # build meshes
     world_mesh = parallel_dims.build_mesh(device_type="cuda")
@@ -198,6 +205,7 @@ def main(job_config: JobConfig):
     model_config.max_seq_len = job_config.training.seq_len
 
     logging_info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
+
     with torch.device("meta"):
         try:
             logging_info(f"Using torchtitan model")

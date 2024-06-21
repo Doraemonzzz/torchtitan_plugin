@@ -1,9 +1,6 @@
-import logging
 
 import torch
 import torch.distributed as dist
-
-logger = logging.getLogger()
 
 
 def is_dist_avail_and_initialized():
@@ -22,11 +19,6 @@ def get_rank():
 
 def is_main_process():
     return get_rank() == 0
-
-
-def logging_info(string):
-    if is_main_process():
-        logger.info(string)
 
 
 def get_num_params(model: torch.nn.Module, exclude_embedding: bool = False) -> int:

@@ -2,7 +2,7 @@
 
 [job]
 dump_folder = "./outputs"
-description = "LLaMA 410m training"
+description = "LLaMA 7B training"
 
 [profiling]
 enable_profiling = true
@@ -10,13 +10,13 @@ save_traces_folder = "profile_trace"
 profile_freq = 100
 
 [metrics]
-log_freq = 100
+log_freq = 10
 enable_tensorboard = true
 save_tb_folder = "tb"
 
 [model]
 name = "llama"
-flavor = "410M"
+flavor = "7B"
 norm_type = "fused_rmsnorm"  # layernorm / np_layernorm / rmsnorm / fused_rmsnorm
 tokenizer_path = "./torchtitan/datasets/tokenizer/tokenizer.model"
 
