@@ -1,7 +1,7 @@
 from torchtitan.datasets.tokenizer.sentencepiece import SentencePieceTokenizer
 from torchtitan.datasets.tokenizer.tiktoken import TikTokenizer
 from torchtitan.datasets.tokenizer.tokenizer import Tokenizer
-from torchtitan.logging_utils import logger
+from torchtitan.logging import logger
 
 from torchtitan_plugin.utils import JobConfig, logging_info
 

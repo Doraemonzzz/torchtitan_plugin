@@ -4,49 +4,28 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import contextlib
-import gc
 import os
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from io import BytesIO
-from timeit import default_timer as timer
 from typing import Any, Dict, List
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.distributed import destroy_process_group
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.elastic.multiprocessing.errors import record
-from torch.distributed.tensor.parallel import loss_parallel
+from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager
-
-# from torchtitan.datasets import create_tokenizer
-from torchtitan.float8_linear import build_fp8_linear
-
-# from torchtitan.logging_utils import init_logger
-from torchtitan.lr_scheduling import get_lr_scheduler
-
-# from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
-# from torchtitan.parallelisms import ParallelDims
+from torchtitan.float8 import Float8Handler
+from torchtitan.optimizer import build_lr_schedulers, build_optimizers
+from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 
 try:
     from torchtitan.parallelisms.pipelining_utils import build_pipeline_schedule
 except:
     build_pipeline_schedule = None
-# from torchtitan.profiling import maybe_enable_profiling
-from torchtitan.utils import (
-    Color,
-    NoColor,
-    dist_max,
-    dist_mean,
-    get_metrics_rank,
-    get_peak_flops,
-    init_distributed,
-    set_pg_timeouts,
-)
+
 from transformers import AutoModelForCausalLM
 
 from torchtitan_plugin.data import build_data_loader
@@ -135,19 +114,29 @@ def build_optimizer(model, job_config: JobConfig):
 @record
 def main(job_config: JobConfig):
     init_logger()
+    logging_info(f"Starting job: {job_config.job.description}")
 
     # used for colorful printing
-    color = Color if job_config.metrics.enable_color_printing else NoColor
+    color = utils.Color if job_config.metrics.enable_color_printing else utils.NoColor
 
     # take control of garbage collection to avoid stragglers
-    _gc_freq = job_config.training.gc_freq
-    gc.disable()
-    gc.collect(1)
+    gc_handler = utils.GarbageCollection(gc_freq=job_config.training.gc_freq)
+
+    # set determinisism, use seed == None to skip deterministic training
+    utils.set_determinism(job_config.training.seed)
+    if job_config.training.seed is None:
+        logging_info("Deterministic training off")
+    else:
+        logging_info(
+            f"Deterministic training on. Using seed: {job_config.training.seed}"
+        )
 
     # init distributed
     world_size = int(os.environ["WORLD_SIZE"])
     parallel_dims = ParallelDims(
-        dp=job_config.training.data_parallel_degree,
+        dp_shard=job_config.training.data_parallel_shard_degree,
+        dp_replicate=job_config.training.data_parallel_replicate_degree,
+        cp=job_config.experimental.context_parallel_degree,
         tp=job_config.training.tensor_parallel_degree,
         pp=job_config.experimental.pipeline_parallel_degree,
         world_size=world_size,
@@ -155,9 +144,11 @@ def main(job_config: JobConfig):
     )
     device = torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
     torch.cuda.set_device(device)
-    init_distributed(job_config)
-
-    logging_info(f"Starting job: {job_config.job.description}")
+    utils.init_distributed(job_config)
+    # initialize GPU memory monitor and get peak flops for MFU calculation
+    gpu_memory_monitor = build_gpu_memory_monitor()
+    gpu_peak_flops = utils.get_peak_flops(gpu_memory_monitor.device_name)
+    logging_info(f"Peak FLOPS used for computing MFU: {gpu_peak_flops:.3e}")
 
     # build meshes
     world_mesh = parallel_dims.build_mesh(device_type="cuda")
@@ -188,15 +179,6 @@ def main(job_config: JobConfig):
         dp_rank,
     )
 
-    # loss_parallel enables dispatching to efficient loss operators
-    loss_parallel_ctx = (
-        loss_parallel if parallel_dims.loss_parallel_enabled else contextlib.nullcontext
-    )
-
-    # loss fn can be shared by pipeline-parallel or non-pp execution
-    def loss_fn(pred, labels):
-        return F.cross_entropy(pred.flatten(0, 1), labels.flatten(0, 1))
-
     # build model (using meta init)
     model_cls = model_name_to_cls.get(model_name, AutoModelForCausalLM)
     model_config = models_config[model_name][job_config.model.flavor]
@@ -220,9 +202,10 @@ def main(job_config: JobConfig):
 
     logging_info(model)
 
-    # apply fp8 linear module swap
-    if job_config.training.fp8_linear:
-        build_fp8_linear(model, job_config)
+    # a no-op hander if float8 is not enabled
+    float8_handler = Float8Handler(job_config, parallel_dims)
+    # swap to Float8Linear based on float8 configs
+    float8_handler.convert_to_float8_training(model)
 
     # log model size
     model_param_count = get_num_params(model)
@@ -236,31 +219,42 @@ def main(job_config: JobConfig):
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
-    # initialize GPU memory monitor before applying parallelisms to the model
-    gpu_memory_monitor = build_gpu_memory_monitor()
-    # obtain the peak flops of bf16 type for MFU calculation
-    gpu_peak_flops = get_peak_flops(gpu_memory_monitor.device_name)
-
-    if parallel_dims.pp_enabled:
-        stage, model = models_pipelining_fns[model_name](
-            model, world_mesh, parallel_dims, job_config, device, model_config
+    # loss function to be shared by Pipeline Parallel and SPMD training
+    def loss_fn(pred, labels):
+        return torch.nn.functional.cross_entropy(
+            pred.flatten(0, 1).float(), labels.flatten(0, 1)
         )
 
-    # apply PT-D DP/TP parallelisms and activation checkpointing
-    model = models_parallelize_fns[model_name](
-        model, world_mesh, parallel_dims, job_config
-    )
+    if job_config.training.compile:
+        loss_fn = torch.compile(loss_fn)
 
-    init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
-    model.to_empty(device=init_device)
-
+    # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
-        pp_schedule = build_pipeline_schedule(job_config, parallel_dims, stage, loss_fn)
+        # apply PT-D Pipeline Parallel
+        pp_schedule, model_parts = models_pipelining_fns[model_name](
+            model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
+        )
+
+        # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
+        # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
+        # optimizer, and checkpointing
+        for m in model_parts:
+            # apply SPMD-style PT-D techniques
+            models_parallelize_fns[model_name](m, world_mesh, parallel_dims, job_config)
+            m.to_empty(device="cuda")
+            m.init_weights()
+            m.train()
     else:
-        # If PP is enabled, we can't rely on init_weights, because some layers are missing.
-        # In the future, we may make init_weights handle missing layers, but also have to consider RNG seed propagation.
-        # allocate sharded model on GPU and initialize weights via DTensor
+        # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
+        models_parallelize_fns[model_name](model, world_mesh, parallel_dims, job_config)
+
+        # move sharded model to CPU/GPU and initialize weights via DTensor
+        init_device = "cpu" if job_config.checkpoint.create_seed_checkpoint else "cuda"
+        model.to_empty(device=init_device)
         model.init_weights()
+        model.train()
+
+        model_parts = [model]
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
     logging_info(
@@ -270,23 +264,17 @@ def main(job_config: JobConfig):
     )
 
     # build optimizer after applying parallelisms to the model
-    optimizer = build_optimizer(model, job_config)
-    lr_scheduler = get_lr_scheduler(optimizer, job_config)
-
-    metric_logger = build_metric_logger(
-        job_config, metrics_log_rank=get_metrics_rank(world_mesh, parallel_dims)
-    )
+    optimizers = build_optimizers(model_parts, job_config)
+    lr_schedulers = build_lr_schedulers(optimizers.optimizers, job_config)
 
     train_state = TrainState()
 
-    model.train()
-
     # load initial checkpoint
     checkpoint = CheckpointManager(
-        model=model,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
         dataloader=data_loader,
+        model_parts=model_parts,
+        optimizers=optimizers.optimizers,
+        lr_schedulers=lr_schedulers.schedulers,
         states={"train_state": train_state},
         job_config=job_config,
     )
@@ -302,10 +290,13 @@ def main(job_config: JobConfig):
     checkpoint_loaded = checkpoint.load()
 
     if parallel_dims.pp_enabled and not checkpoint_loaded:
-        raise RuntimeError(
-            "Pipeline Parallelism requires meta-initialization and loading seed checkpoint. "
-            "Please run `./create_seed_checkpoint.sh` and rerun training with `--checkpoint.enable_checkpoint`"
+        # TODO: fix this by allowing each rank to set their own seed
+        logger.warning(
+            "Pipeline Parallelism is being used without a seed checkpoint. "
+            "All the substages will be initialized with random weights with same RNG state which can affect convergence."
         )
+
+    metric_logger = build_metric_logger(job_config, parallel_dims)
 
     # plot losses loaded from checkpoint (if any) to TensorBoard
     # NOTE: Loss info after the last log step before checkpoint saving will not be ploted.
@@ -320,42 +311,66 @@ def main(job_config: JobConfig):
 
     data_iterator = iter(data_loader)
 
-    checkpoint.reset()
+    train_context = utils.get_train_context(
+        parallel_dims.loss_parallel_enabled,
+        job_config.experimental.enable_compiled_autograd,
+    )
 
     # variables used to keep info for metrics logging
-    losses_since_last_log: List[float] = []
+    losses_since_last_log = []
     ntokens_since_last_log = 0
-    data_loading_times: List[float] = []
-    time_last_log = timer()
+    data_loading_times = []
+    time_last_log = time.perf_counter()
     gpu_memory_monitor.reset_peak_stats()
 
+    checkpoint.reset()
+
     # train loop
-    logging_info(f"Training starts at step {train_state.step + 1}")
-    batch = next(data_iterator)
+    logging_info(
+        f"Training starts at step {train_state.step + 1}, "
+        f"with local batch size {job_config.training.batch_size}, "
+        f"global batch size {job_config.training.batch_size * dp_degree}, "
+        f"sequence length {job_config.training.seq_len}, "
+        f"total steps {job_config.training.steps} "
+        f"(warmup {job_config.training.warmup_steps})"
+    )
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
-    ) as torch_profiler:
+    ) as torch_profiler, maybe_enable_memory_snapshot(
+        job_config, global_step=train_state.step
+    ) as memory_profiler:
         while train_state.step < job_config.training.steps:
             train_state.step += 1
-            if train_state.step > 1 and train_state.step % _gc_freq == 0:
-                gc.collect(1)
+            gc_handler.run(train_state.step)
 
             # get batch
-            data_load_start = timer()
-
+            data_load_start = time.perf_counter()
+            batch = next(data_iterator)
             input_ids, labels = batch
             ntokens_since_last_log += labels.numel()
-            data_loading_times.append(timer() - data_load_start)
+            data_loading_times.append(time.perf_counter() - data_load_start)
 
             input_ids = input_ids.cuda()
             labels = labels.cuda()
-            optimizer.zero_grad()
+            optimizers.zero_grad()
+
+            # apply context parallelism if cp is enabled
+            optional_context_parallel_ctx = (
+                utils.create_context_parallel_ctx(
+                    cp_mesh=world_mesh["cp"],
+                    cp_buffers=[input_ids, labels, model.freqs_cis],
+                    cp_seq_dims=[1, 1, 0],
+                    cp_no_restore_buffers={input_ids, labels},
+                )
+                if parallel_dims.cp_enabled
+                else None
+            )
 
             if parallel_dims.pp_enabled:
-                # pipeline parallel forward / backward inside step() call
+                # Pipeline Parallel forward / backward inside step() call
                 is_last_stage = pp_mesh.get_local_rank() == pp_mesh.size() - 1
 
-                with loss_parallel_ctx():
+                with train_context(optional_context_parallel_ctx):
                     if pp_mesh.get_local_rank() == 0:
                         pp_schedule.step(input_ids)
                     elif is_last_stage:
@@ -370,30 +385,35 @@ def main(job_config: JobConfig):
                     if is_last_stage
                     else torch.Tensor([-1.0])
                 )
-                batch = next(data_iterator)
             else:
                 # Non-PP forward / backward
-                with loss_parallel_ctx():
+                with train_context(optional_context_parallel_ctx):
                     pred = model(input_ids)
                     if hasattr(pred, "logits"):
                         pred = pred.logits
-                    # logging_info(f"{torch.max(pred).item()} {torch.min(pred).item()}")
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
-                    batch = next(data_iterator)
                     loss.backward()
 
             # clip gradients
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), job_config.training.max_norm, foreach=True
-            )
+            for m in model_parts:
+                torch.nn.utils.clip_grad_norm_(
+                    m.parameters(), job_config.training.max_norm, foreach=True
+                )
+
+            # sync float8 amaxes and scales
+            float8_handler.sync_float8_amax_and_scale_history(model_parts)
 
             # optimizer step
-            checkpoint.wait_for_staging()
-            optimizer.step()
-            lr_scheduler.step()
+            checkpoint.maybe_wait_for_staging()
+            optimizers.step()
+            lr_schedulers.step()
+
+            # calculate float8 dynamic amax/scale for all-parameter for FSDP2
+            # it issues a single all-reduce for all parameters at once for better performance
+            float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
 
             losses_since_last_log.append(loss)
 
@@ -403,27 +423,25 @@ def main(job_config: JobConfig):
                 or train_state.step % job_config.metrics.log_freq == 0
             ):
                 losses = [loss.item() for loss in losses_since_last_log]
-                avg_loss, max_loss = (
-                    np.mean(losses),
-                    np.max(losses),
-                )
+                avg_loss, max_loss = sum(losses) / len(losses), max(losses)
                 if parallel_dims.dp_enabled:
                     global_avg_loss, global_max_loss = (
-                        dist_mean(avg_loss, dp_mesh).item(),
-                        dist_max(max_loss, dp_mesh).item(),
+                        utils.dist_mean(avg_loss, dp_mesh),
+                        utils.dist_max(max_loss, dp_mesh),
                     )
                 else:
                     global_avg_loss, global_max_loss = avg_loss, max_loss
 
+                # update train state
                 train_state.log_steps.append(train_state.step)
                 train_state.global_avg_losses.append(global_avg_loss)
                 train_state.global_max_losses.append(global_max_loss)
 
-                time_delta = timer() - time_last_log
+                time_delta = time.perf_counter() - time_last_log
 
                 # tokens per second, abbr. as wps by convention
                 wps = ntokens_since_last_log / (
-                    time_delta * parallel_dims.model_parallel_size
+                    time_delta * parallel_dims.non_data_parallel_size
                 )
                 # model FLOPS utilization
                 # For its definition and calculation, please refer to the PaLM paper:
@@ -431,8 +449,8 @@ def main(job_config: JobConfig):
                 mfu = 100 * num_flop_per_token * wps / gpu_peak_flops
 
                 time_end_to_end = time_delta / job_config.metrics.log_freq
-                time_data_loading = np.mean(data_loading_times)
-                time_data_loading_pct = 100 * np.sum(data_loading_times) / time_delta
+                time_data_loading = sum(data_loading_times) / len(data_loading_times)
+                time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
 
                 gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
 
@@ -465,20 +483,23 @@ def main(job_config: JobConfig):
                 losses_since_last_log.clear()
                 ntokens_since_last_log = 0
                 data_loading_times.clear()
-                time_last_log = timer()
+                time_last_log = time.perf_counter()
                 gpu_memory_monitor.reset_peak_stats()
 
             checkpoint.save(
                 train_state.step, force=(train_state.step == job_config.training.steps)
             )
 
-            # signals the profiler that the next profiling step has started
+            # signal the profiler that the next profiling step has started
             if torch_profiler:
                 torch_profiler.step()
+            if memory_profiler:
+                memory_profiler.step()
 
-            # Reduce timeout after first train step for faster signal (assumes lazy init, compile are finished)
+            # reduce timeout after first train step for faster signal
+            # (assuming lazy init and compilation are finished)
             if train_state.step == 1:
-                set_pg_timeouts(
+                utils.set_pg_timeouts(
                     timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
                     world_mesh=world_mesh,
                 )

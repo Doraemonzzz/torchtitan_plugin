@@ -12,7 +12,6 @@ def init_logger():
     os.environ["KINETO_LOG_LEVEL"] = "5"
 
 
-# log only onece: https://stackoverflow.com/questions/31953272/logging-print-message-only-once
 def logging_info(string, warning=False):
     if is_main_process():
         if warning:
